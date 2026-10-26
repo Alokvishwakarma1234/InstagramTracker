@@ -1,46 +1,45 @@
 package com.alok.instatracker
 
+import android.content.Intent
+import android.net.Uri
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
-import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.weight
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Analytics
-import androidx.compose.material.icons.filled.CompareArrows
-import androidx.compose.material.icons.filled.FileUpload
-import androidx.compose.material.icons.filled.Insights
 import androidx.compose.material.icons.filled.Lock
+import androidx.compose.material.icons.filled.OpenInBrowser
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.NavigationBar
-import androidx.compose.material3.NavigationBarItem
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.darkColorScheme
-import androidx.compose.runtime.Composable
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableIntStateOf
-import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
+import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import org.json.JSONObject
+import java.net.HttpURLConnection
+import java.net.URL
 
 private val Ink = Color(0xFF0D0F14)
 private val Panel = Color(0xFF191D27)
@@ -48,56 +47,139 @@ private val Violet = Color(0xFF9C7BFF)
 private val Muted = Color(0xFF9AA3B2)
 
 class MainActivity : ComponentActivity() {
+    private val prefs by lazy { getSharedPreferences("instatracker", MODE_PRIVATE) }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-        setContent { InstaTrackerApp() }
+        handleOAuthIntent(intent)
+        setContent {
+            MaterialTheme(colorScheme = darkColorScheme(primary = Violet, background = Ink, surface = Panel, onBackground = Color.White, onSurface = Color.White)) {
+                InstaTrackerApp(
+                    initialHandle = prefs.getString("session_handle", null),
+                    initialUsername = prefs.getString("username", null),
+                    onConnect = { openInstagramLogin() },
+                    onDisconnect = { disconnect() },
+                    onRefreshProfile = { fetchProfile() }
+                )
+            }
+        }
     }
-}
 
-@Composable
-private fun InstaTrackerApp() {
-    var selectedTab by remember { mutableIntStateOf(0) }
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        handleOAuthIntent(intent)
+    }
 
-    MaterialTheme(
-        colorScheme = darkColorScheme(
-            primary = Violet,
-            background = Ink,
-            surface = Panel,
-            onBackground = Color.White,
-            onSurface = Color.White
-        )
-    ) {
-        Surface(
-            modifier = Modifier.fillMaxSize(),
-            color = Ink
-        ) {
-            Column(modifier = Modifier.fillMaxSize()) {
-                Box(modifier = Modifier.weight(1f)) {
-                    when (selectedTab) {
-                        0 -> DashboardScreen(onImport = { selectedTab = 1 })
-                        1 -> ImportScreen()
-                        else -> CompareScreen()
+    private fun baseUrl(): String = BuildConfig.API_BASE_URL.trimEnd('/')
+
+    private fun openInstagramLogin() {
+        if (baseUrl().contains("YOUR_BACKEND_HOST")) {
+            notifyApp("Setup required: deploy backend and set API_BASE_URL in app/build.gradle.kts.")
+            return
+        }
+        try {
+            startActivity(Intent(Intent.ACTION_VIEW, Uri.parse("${baseUrl()}/auth/instagram")))
+        } catch (_: Exception) {
+            notifyApp("Could not open the browser.")
+        }
+    }
+
+    private fun handleOAuthIntent(intent: Intent?) {
+        val uri = intent?.data ?: return
+        if (uri.scheme != "instatracker" || uri.host != "oauth" || uri.path != "/callback") return
+        val error = uri.getQueryParameter("error")
+        if (!error.isNullOrBlank()) {
+            notifyApp(error)
+            return
+        }
+        val ticket = uri.getQueryParameter("session")
+        if (ticket.isNullOrBlank()) {
+            notifyApp("Instagram connection did not return a session. Please retry.")
+            return
+        }
+        Thread {
+            try {
+                val body = JSONObject().put("session", ticket).toString()
+                val response = request("POST", "/api/mobile/session", body = body)
+                val handle = response.getString("sessionHandle")
+                prefs.edit().putString("session_handle", handle).apply()
+                runOnUiThread {
+                    notifyApp("Instagram authorization completed. Loading profile…")
+                    setContent {
+                        MaterialTheme(colorScheme = darkColorScheme(primary = Violet, background = Ink, surface = Panel, onBackground = Color.White, onSurface = Color.White)) {
+                            InstaTrackerApp(
+                                initialHandle = handle,
+                                initialUsername = prefs.getString("username", null),
+                                onConnect = { openInstagramLogin() },
+                                onDisconnect = { disconnect() },
+                                onRefreshProfile = { fetchProfile() }
+                            )
+                        }
                     }
                 }
+            } catch (_: Exception) {
+                notifyApp("Could not finish connection. Check the backend URL and try again.")
+            }
+        }.start()
+    }
 
-                NavigationBar(containerColor = Panel) {
-                    NavigationBarItem(
-                        selected = selectedTab == 0,
-                        onClick = { selectedTab = 0 },
-                        icon = { Icon(Icons.Default.Analytics, contentDescription = "Dashboard") },
-                        label = { Text("Home") }
-                    )
-                    NavigationBarItem(
-                        selected = selectedTab == 1,
-                        onClick = { selectedTab = 1 },
-                        icon = { Icon(Icons.Default.FileUpload, contentDescription = "Import data") },
-                        label = { Text("Import") }
-                    )
-                    NavigationBarItem(
-                        selected = selectedTab == 2,
-                        onClick = { selectedTab = 2 },
-                        icon = { Icon(Icons.Default.CompareArrows, contentDescription = "Compare") },
-                        label = { Text("Compare") }
+    private fun fetchProfile(): Pair<String?, String?> {
+        val handle = prefs.getString("session_handle", null) ?: return null to "Connect Instagram first."
+        return try {
+            val response = request("GET", "/api/me", token = handle)
+            val username = response.optString("username").takeIf { it.isNotBlank() && it != "null" }
+            prefs.edit().putString("username", username).apply()
+            username to null
+        } catch (e: Exception) {
+            null to (e.message ?: "Could not load profile.")
+        }
+    }
+
+    private fun disconnect() {
+        val handle = prefs.getString("session_handle", null)
+        if (handle != null && !baseUrl().contains("YOUR_BACKEND_HOST")) {
+            Thread { try { request("DELETE", "/api/session", token = handle) } catch (_: Exception) {} }.start()
+        }
+        prefs.edit().remove("session_handle").remove("username").apply()
+        notifyApp("Disconnected from InstaTracker.")
+    }
+
+    private fun request(method: String, path: String, body: String? = null, token: String? = null): JSONObject {
+        val connection = (URL(baseUrl() + path).openConnection() as HttpURLConnection).apply {
+            requestMethod = method
+            connectTimeout = 15000
+            readTimeout = 15000
+            setRequestProperty("Accept", "application/json")
+            if (body != null) {
+                doOutput = true
+                setRequestProperty("Content-Type", "application/json")
+            }
+            if (token != null) setRequestProperty("Authorization", "Bearer $token")
+        }
+        try {
+            if (body != null) connection.outputStream.use { it.write(body.toByteArray(Charsets.UTF_8)) }
+            val code = connection.responseCode
+            val stream = if (code in 200..299) connection.inputStream else connection.errorStream
+            val text = stream?.bufferedReader()?.use { it.readText() }.orEmpty()
+            if (code !in 200..299) throw IllegalStateException(JSONObject(text).optString("error", "Request failed ($code)"))
+            return if (text.isBlank()) JSONObject() else JSONObject(text)
+        } finally {
+            connection.disconnect()
+        }
+    }
+
+    private fun notifyApp(message: String) {
+        runOnUiThread {
+            setContent {
+                MaterialTheme(colorScheme = darkColorScheme(primary = Violet, background = Ink, surface = Panel, onBackground = Color.White, onSurface = Color.White)) {
+                    InstaTrackerApp(
+                        initialHandle = prefs.getString("session_handle", null),
+                        initialUsername = prefs.getString("username", null),
+                        initialMessage = message,
+                        onConnect = { openInstagramLogin() },
+                        onDisconnect = { disconnect() },
+                        onRefreshProfile = { fetchProfile() }
                     )
                 }
             }
@@ -106,116 +188,75 @@ private fun InstaTrackerApp() {
 }
 
 @Composable
-private fun DashboardScreen(onImport: () -> Unit) {
-    Column(
-        modifier = Modifier.fillMaxSize().padding(horizontal = 20.dp, vertical = 18.dp),
-        verticalArrangement = Arrangement.spacedBy(18.dp)
-    ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Column(modifier = Modifier.weight(1f)) {
-                Text("INSTATRACKER", color = Violet, fontSize = 12.sp, fontWeight = FontWeight.Bold, letterSpacing = 2.sp)
-                Text("Your account overview", color = Color.White, fontSize = 25.sp, fontWeight = FontWeight.Bold)
-            }
-            Icon(Icons.Default.Insights, contentDescription = null, tint = Violet)
-        }
+private fun InstaTrackerApp(
+    initialHandle: String?,
+    initialUsername: String?,
+    initialMessage: String? = null,
+    onConnect: () -> Unit,
+    onDisconnect: () -> Unit,
+    onRefreshProfile: () -> Pair<String?, String?>
+) {
+    var connected by remember { mutableStateOf(!initialHandle.isNullOrBlank()) }
+    var username by remember { mutableStateOf(initialUsername) }
+    var message by remember { mutableStateOf(initialMessage) }
+    var loading by remember { mutableStateOf(false) }
+    val scope = rememberCoroutineScope()
 
-        Card(
-            shape = RoundedCornerShape(24.dp),
-            colors = CardDefaults.cardColors(containerColor = Panel)
+    Surface(modifier = Modifier.fillMaxSize(), color = Ink) {
+        Column(
+            modifier = Modifier.fillMaxSize().padding(24.dp),
+            verticalArrangement = Arrangement.spacedBy(18.dp),
+            horizontalAlignment = Alignment.Start
         ) {
-            Column(modifier = Modifier.fillMaxWidth().padding(18.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                Text("YOUR INSTAGRAM DATA", color = Muted, fontSize = 11.sp, letterSpacing = 1.3.sp)
-                Text("Import to get started", fontSize = 22.sp, fontWeight = FontWeight.SemiBold)
-                Text(
-                    "Bring in your Instagram data export to compare followers and following privately on this phone.",
-                    color = Muted,
-                    fontSize = 14.sp,
-                    lineHeight = 20.sp
-                )
-                Button(onClick = onImport, modifier = Modifier.fillMaxWidth()) {
-                    Icon(Icons.Default.FileUpload, contentDescription = null, modifier = Modifier.padding(end = 8.dp))
-                    Text("Import Instagram data")
+            Text("INSTATRACKER", color = Violet, fontSize = 13.sp, fontWeight = FontWeight.Bold, letterSpacing = 2.sp)
+            Text(if (connected) "Account connection" else "Connect your Instagram", color = Color.White, fontSize = 28.sp, fontWeight = FontWeight.Bold)
+            Text(
+                if (connected) "Instagram authorization is saved on this device. Only official API fields are shown."
+                else "Sign in on Instagram's official website. InstaTracker never asks for or stores your Instagram password.",
+                color = Muted, fontSize = 14.sp
+            )
+            Card(shape = RoundedCornerShape(22.dp), colors = CardDefaults.cardColors(containerColor = Panel)) {
+                Column(modifier = Modifier.fillMaxWidth().padding(20.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+                    Icon(if (connected) Icons.Default.Lock else Icons.Default.OpenInBrowser, contentDescription = null, tint = Violet)
+                    Text(if (connected) "Connected" else "Official Instagram Login", fontSize = 19.sp, fontWeight = FontWeight.SemiBold)
+                    if (connected) {
+                        Text(username?.let { "@$it" } ?: "Authorized account", color = Color.White, fontSize = 18.sp)
+                        Text("Available now: basic profile information, if granted by Meta.", color = Muted, fontSize = 13.sp)
+                        Button(
+                            onClick = {
+                                loading = true
+                                scope.launch {
+                                    val result = withContext(Dispatchers.IO) { onRefreshProfile() }
+                                    username = result.first ?: username
+                                    message = result.second ?: if (username != null) "Profile loaded." else "Connected; username was not returned."
+                                    loading = false
+                                }
+                            },
+                            modifier = Modifier.fillMaxWidth(),
+                            enabled = !loading
+                        ) {
+                            if (loading) CircularProgressIndicator()
+                            else Text("Refresh profile")
+                        }
+                        OutlinedButton(onClick = { onDisconnect(); connected = false; username = null }, modifier = Modifier.fillMaxWidth()) {
+                            Text("Disconnect")
+                        }
+                    } else {
+                        Text("Instagram Login requires a configured Meta Developer app and deployed HTTPS backend. Personal accounts may not be eligible for this API.", color = Muted, fontSize = 13.sp)
+                        Button(onClick = onConnect, modifier = Modifier.fillMaxWidth()) {
+                            Icon(Icons.Default.OpenInBrowser, contentDescription = null, modifier = Modifier.padding(end = 8.dp))
+                            Text("Continue with Instagram")
+                        }
+                    }
                 }
             }
-        }
-
-        Text("OVERVIEW", color = Muted, fontSize = 12.sp, fontWeight = FontWeight.Bold, letterSpacing = 1.5.sp)
-        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            MetricCard(title = "Followers", value = "—", subtitle = "Import data first", modifier = Modifier.weight(1f))
-            MetricCard(title = "Following", value = "—", subtitle = "Import data first", modifier = Modifier.weight(1f))
-        }
-        Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            MetricCard(title = "Not following back", value = "—", subtitle = "Awaiting data", modifier = Modifier.weight(1f))
-            MetricCard(title = "New / unfollowed", value = "—", subtitle = "Needs 2 imports", modifier = Modifier.weight(1f))
-        }
-
-        Card(
-            shape = RoundedCornerShape(20.dp),
-            colors = CardDefaults.cardColors(containerColor = Color(0xFF211C33))
-        ) {
-            Row(modifier = Modifier.fillMaxWidth().padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
-                Icon(Icons.Default.Lock, contentDescription = null, tint = Violet)
-                Spacer(Modifier.padding(4.dp))
-                Column {
-                    Text("Privacy-first", fontWeight = FontWeight.SemiBold)
-                    Text("No Instagram password required. No visitor names are invented.", color = Muted, fontSize = 12.sp)
+            if (!message.isNullOrBlank()) {
+                Card(shape = RoundedCornerShape(16.dp), colors = CardDefaults.cardColors(containerColor = Color(0xFF211C33))) {
+                    Text(message!!, modifier = Modifier.padding(14.dp), color = Color.White, fontSize = 13.sp)
                 }
             }
-        }
-    }
-}
-
-@Composable
-private fun MetricCard(title: String, value: String, subtitle: String, modifier: Modifier = Modifier) {
-    Card(
-        modifier = modifier,
-        shape = RoundedCornerShape(20.dp),
-        colors = CardDefaults.cardColors(containerColor = Panel)
-    ) {
-        Column(modifier = Modifier.fillMaxWidth().padding(14.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-            Text(title, color = Muted, fontSize = 12.sp)
-            Text(value, fontSize = 25.sp, fontWeight = FontWeight.Bold)
-            Text(subtitle, color = Muted, fontSize = 10.sp)
-        }
-    }
-}
-
-@Composable
-private fun ImportScreen() {
-    Column(
-        modifier = Modifier.fillMaxSize().padding(22.dp),
-        verticalArrangement = Arrangement.spacedBy(16.dp)
-    ) {
-        Text("Import data", fontSize = 28.sp, fontWeight = FontWeight.Bold)
-        Text(
-            "The import flow will let you select your Instagram data export ZIP. Processing will happen on your phone.",
-            color = Muted,
-            fontSize = 14.sp
-        )
-        Card(shape = RoundedCornerShape(20.dp), colors = CardDefaults.cardColors(containerColor = Panel)) {
-            Column(modifier = Modifier.fillMaxWidth().padding(18.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                Icon(Icons.Default.FileUpload, contentDescription = null, tint = Violet)
-                Text("Instagram data export", fontWeight = FontWeight.SemiBold)
-                Text("Choose the ZIP exported through Instagram Accounts Center. Import functionality is the next implementation step.", color = Muted, fontSize = 13.sp)
-            }
-        }
-    }
-}
-
-@Composable
-private fun CompareScreen() {
-    Column(
-        modifier = Modifier.fillMaxSize().padding(22.dp),
-        verticalArrangement = Arrangement.spacedBy(16.dp)
-    ) {
-        Text("Compare accounts", fontSize = 28.sp, fontWeight = FontWeight.Bold)
-        Text("After importing data, this screen will show accounts you follow that do not appear in your follower list.", color = Muted, fontSize = 14.sp)
-        Card(shape = RoundedCornerShape(20.dp), colors = CardDefaults.cardColors(containerColor = Panel)) {
-            Column(modifier = Modifier.fillMaxWidth().padding(18.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                Icon(Icons.Default.CompareArrows, contentDescription = null, tint = Violet)
-                Text("Waiting for imported data", fontWeight = FontWeight.SemiBold)
-                Text("No comparison is calculated until your data is imported.", color = Muted, fontSize = 13.sp)
-            }
+            Spacer(Modifier.weight(1f))
+            Text("Not available through Instagram's official API: profile visitors, individual profile searches, or a list of people who blocked you. These are never fabricated.", color = Muted, fontSize = 12.sp)
         }
     }
 }
