@@ -14,11 +14,14 @@ android {
         minSdk = 26
         targetSdk = 35
         versionCode = 1
-        versionName = "0.1.0"
+        versionName = "0.2.0"
+        // Replace with your deployed HTTPS backend URL before building.
+        buildConfigField("String", "API_BASE_URL", "\"https://YOUR_BACKEND_HOST\"")
     }
 
     buildFeatures {
         compose = true
+        buildConfig = true
     }
 
     compileOptions {
