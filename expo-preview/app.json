@@ -1,0 +1,18 @@
+{
+  "expo": {
+    "name": "Instagram Tracker",
+    "slug": "instagram-tracker-preview",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "dark",
+    "splash": {
+      "backgroundColor": "#09090B"
+    },
+    "android": {
+      "package": "com.alok.instatracker.preview"
+    },
+    "extra": {
+      "note": "UI preview only; official Instagram API cannot reveal profile visitors or searchers."
+    }
+  }
+}
